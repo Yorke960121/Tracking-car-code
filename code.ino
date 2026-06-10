@@ -8,15 +8,21 @@
 #define CHARACTERISTIC_UUID_RX "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 bool ebsTriggeredByBLE = false; // 建立一個旗標，紀錄是否收到急停訊號
-
+bool vlsTriggeredByBLE = false; // 建立一個旗標，紀錄是否收到起跑訊號
 // 建立接收 BLE 藍牙訊息的回呼函式 (當手機傳訊息來時，這裡會被觸發)
+// 建立接收 BLE 藍牙訊息的回呼函式
 class MyCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
       String rxValue = pCharacteristic->getValue(); 
       if (rxValue.length() > 0) {
         char cmd = rxValue[0]; // 讀取收到的第一個字元
+        
         if (cmd == 'S' || cmd == 's') {
           ebsTriggeredByBLE = true; // 收到 'S'，拉起急停旗標！
+        } 
+        else if (cmd == 'G' || cmd == 'g') {
+          vlsTriggeredByBLE = true;  // 收到 'G'，拉起起跑旗標！
+          ebsTriggeredByBLE = false; // [新增] 同時把急停狀態解除！
         }
       }
     }
@@ -45,11 +51,11 @@ const int ENB = 13; // 右後輪速度 (PWM)
 // ================= 2. 參數設定 =================
 
 // 定義車速 (範圍 0 - 255)
-const int BASE_SPEED = 220;  
+const int BASE_SPEED = 216;  
 
 // -- 小彎微調參數 --
-const int MINOR_FAST = 182;  
-const int MINOR_SLOW = 86;   
+const int MINOR_FAST = 178;  
+const int MINOR_SLOW = 83;   
 
 // -- 直角彎急轉參數--
 const int SHARP_FAST = 255;  // 外側輪胎全速推進
@@ -116,57 +122,30 @@ void setup() {
   delay(1000); // 開機後稍微緩衝一下
   //ASL：等待起跑，處於安全狀態，亮綠燈！
   setASL("GREEN");
-  // ---------------------------------------------------------
-  // VLS 軟體觸發的核心邏輯
-  // ---------------------------------------------------------
-  Serial.println("等待 VLS 觸發：請用手掌完全遮住 5 顆感測器...");
+  
+  // VLS 藍牙觸發核心邏輯 
+  Serial.println("等待 VLS 觸發：請用手機發送 'G' 啟動車輛...");
   bool isVlsTriggered = false; // 建立一個狀態旗標，紀錄是否已經起跑
-
-  // VLS 觸發陷阱：只要還沒觸發，就一直卡在這個迴圈裡，車子絕對不會動
-  while (isVlsTriggered == false) {
-    
-    // 讀取 5 顆感測器的狀態
-    int v1 = digitalRead(S1);
-    int v2 = digitalRead(S2);
-    int v3 = digitalRead(S3);
-    int v4 = digitalRead(S4);
-    int v5 = digitalRead(S5);
-
-
-    // 條件：5 顆感測器「同時」被遮住 (假設遮住回傳 HIGH)
-    if (v1 == HIGH && v2 == HIGH && v3 == HIGH && v4 == HIGH && v5 == HIGH) {
-      
-      Serial.println("偵測到遮蔽！請保持手勢 1 秒鐘來確認...");
-      delay(1000); // 停頓 1 秒鐘，當作防誤觸的 debounce
-      
-      // 1 秒後「再次」檢查，確定手掌還蓋在上面
-      if (digitalRead(S3) == HIGH && digitalRead(S4) == HIGH) {
-        isVlsTriggered = true; // 條件達成！改變旗標狀態，準備跳出迴圈
-        
-        Serial.println(">>> VLS 觸發成功！起跑倒數 3 秒 <<<");
-        delay(1000);
-        Serial.println("2...");
-        delay(1000);
-        Serial.println("1...");
-        delay(1000);
-        Serial.println("GO!");
-        // ASL：車輛起跑進入自主導航狀態，切換成紅燈！
-        setASL("RED");
-      } else {
-        Serial.println("觸發失敗，可能是誤觸，請重新遮蔽。");
-      }
-    }
-    delay(50); // 稍微休息一下，避免迴圈跑太快讓晶片過熱
+  // VLS 觸發陷阱：只要還沒收到 'G'，就一直卡在這個迴圈裡，車子絕對不會動
+  while (vlsTriggeredByBLE == false) {
+    delay(50); // 稍微休息一下，等待手機藍牙發送訊號
   }
+  
+  // 只要程式走到這裡，代表手機已經成功發送了 'G'
+  Serial.println(">>> 收到藍牙起跑訊號！起跑倒數 3 秒 <<<");
+  delay(1000);
+  Serial.println("2...");
+  delay(1000);
+  Serial.println("1...");
+  delay(1000);
+  Serial.println("GO!");
+  
+  // ASL：車輛起跑進入自主導航狀態，切換成紅燈！
+  setASL("RED");
+  // VLS 藍牙觸發結束 
 }
 
 // ================= 4. 馬達控制模組 =================
-// (後面的程式碼維持原樣不動)
-
-
-// ================= 4. 馬達控制模組 =================
-
-
 
 /*
 
@@ -243,19 +222,33 @@ void setMotor(int leftSpeed, int rightSpeed) {
 // ================= 5. 主迴圈 (循跡邏輯) =================
 
 void loop() {
-// ---------------------------------------------------------
+  // ---------------------------------------------------------
+  // EBS 第一層：BLE 藍牙外部急停接收區 
+  // ---------------------------------------------------------
+  // 檢查急停旗標是否被 BLE 觸發
+  // ---------------------------------------------------------
   // EBS 第一層：BLE 藍牙外部急停接收區 
   // ---------------------------------------------------------
   // 檢查急停旗標是否被 BLE 觸發
   if (ebsTriggeredByBLE == true) {
-    Serial.println("!!! 收到 BLE 藍牙 EBS 急停訊號，強制鎖死 !!!");
+    Serial.println("!!! 收到 BLE 藍牙 EBS 急停訊號，車輛暫停 !!!");
     setMotor(0, 0); // 扭矩立刻歸零
+    
     // ASL：觸發緊急制動，切換成藍燈！
     setASL("BLUE");
-    while(true) {
-      delay(100); // 徹底鎖死車輛，直到按下 ESP32 的 EN 鍵重啟
+    
+    // [關鍵修改] 只要 ebsTriggeredByBLE 還是 true，就一直卡在這裡
+    // 等到手機發送 'G'，上面的程式會把它變成 false，就會自動打破這個迴圈！
+    while(ebsTriggeredByBLE == true) {
+      delay(50); // 處於藍燈暫停狀態
     }
+    
+    // --- 只要能走到這裡，代表手機發送了 'G' 解除鎖定 ---
+    Serial.println(">>> 收到恢復訊號！繼續自主導航 <<<");
+    setASL("RED"); // ASL：恢復成自主導航的紅燈
+    delay(1000);   // 給 1 秒鐘的緩衝時間，再讓車子衝出去
   }
+  // ---------------------------------------------------------
   // ---------------------------------------------------------
   // ---------------------------------------------------------
   int val1 = digitalRead(S1);
